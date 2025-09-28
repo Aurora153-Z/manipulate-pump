@@ -1,0 +1,195 @@
+import serial
+import time
+import threading
+import sys#添加sys模块用于退出程序
+
+
+class BT100Pump:
+    def __init__(self, port='COM9', baudrate=9600):#初始化蠕动泵,与端口连接
+        try:
+            self.ser = serial.Serial(port, baudrate, timeout=1)
+            print(f"成功连接到端口 {port}")
+            self.is_running = False#将泵当前状态设置为"未运行"
+        except Exception as e:
+            print(f"连接失败: {e}")
+            self.ser = None
+
+    def send_command(self, command_hex):#将串口指令发送到蠕动泵
+        if not self.ser:
+            print("串口未连接")
+            return False
+
+        try:
+            #移除空格并转换为字节
+            command_bytes = bytes.fromhex(command_hex.replace(" ", ""))
+            self.ser.write(command_bytes)#通过串口发送字节数据给泵
+            print(f"发送: {command_hex}")
+            #等待并读取响应
+            time.sleep(0.1)#给泵反应时间0.1秒
+            response = self.ser.read_all()#读取泵的所有相应
+            if response:
+                print(f"收到: {response.hex()}")#如果有相应数据，将其转换为十六进制，输出
+            return True
+        except Exception as e:
+            print(f"发送失败: {e}")
+            return False
+
+    def calculate_crc(self, data_hex):#计算CRC校验码
+        data = bytes.fromhex(data_hex.replace(" ", ""))
+        crc = 0xFFFF
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x0001:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc >>= 1
+        #交换字节顺序
+        crc = ((crc << 8) & 0xFF00) | ((crc >> 8) & 0x00FF)
+        return format(crc, '04X')
+
+    def build_command(self, params):#将指令与CRC检验码结合
+        command = " ".join(params)#用空格连接
+        crc = self.calculate_crc(command)
+        return f"{command} {crc[:2]} {crc[2:]}"
+
+    def set_speed(self, rpm):#设置转速
+        speed_hex = format(rpm * 10, '04X')#转换为四字节十六进制
+        command = self.build_command(["01", "06", "00", "02", speed_hex[:2], speed_hex[2:]])
+        return self.send_command(command)
+
+    def set_timer_mode(self):#设置定时模式
+        command = self.build_command(["01", "06", "00", "07", "00", "01"])
+        return self.send_command(command)
+
+    def set_timer(self, minutes):#设置运行时间
+        timer_hex = format(minutes * 600, '04X')#设置分钟转0.1秒单位并转换为四字节十六进制
+        command = self.build_command(["01", "06", "00", "08", timer_hex[:2], timer_hex[2:]])
+        return self.send_command(command)
+
+    def start(self):#发送指令启动泵
+        command = self.build_command(["01", "06", "00", "00", "00", "01"])
+        return self.send_command(command)
+
+    def stop(self):#发送指令停止泵
+        command = self.build_command(["01", "06", "00", "00", "00", "00"])
+        return self.send_command(command)
+
+    def run_interval(self, run_time, interval_time, total_duration):#设置运行时间、间隔时间和总运行时间
+        self.is_running = True
+        start_time = time.time()
+        cycle_count = 0
+        print(f"\n开始运行: 每次{run_time}分钟, 间隔{interval_time}分钟, 总共{total_duration}分钟")
+
+        while self.is_running:#检查总运行时间是否结束
+            if (time.time() - start_time) >= total_duration * 60:  # 计算已运行时间是否大于等于总运行时间
+                break
+            cycle_count += 1
+            print(f"\n第 {cycle_count} 个周期")
+
+            #设置并运行
+            self.set_timer(run_time)#设置本次运行的时间
+            self.start()#启动泵运行
+            print(f"正在运行中...等待{run_time}分钟")
+
+            #将长时间的等待拆分成短时间的等待，以便及时响应停止信号
+            waited = 0
+            while waited < run_time * 60 and self.is_running:
+                time.sleep(1)  # 每次等待1秒
+                waited += 1
+
+            #检查是否需要继续
+            if not self.is_running or (time.time() - start_time) >= total_duration * 60:
+                break
+
+            #间隔等待
+            if interval_time > 0:
+                print(f"间隔等待...{interval_time}分钟")
+                #同样将间隔等待拆分成短时间等待
+                waited = 0
+                while waited < interval_time * 60 and self.is_running:
+                    time.sleep(1)#每次等待1秒
+                    waited += 1
+
+        print(f"\n完成! 共{cycle_count}个周期")
+        self.is_running = False#所有运行结束后，重置运行状态
+
+    def close(self):#关闭串口连接
+        if self.ser:
+            self.stop()
+            self.ser.close()
+            print("连接已关闭")
+
+
+def wait_for_enter(pump, run_thread):#等待按回车键，然后停止泵并退出程序
+    try:
+        input()#等待用户按回车键
+        print("\n收到停止信号，正在停止泵...")
+        pump.is_running = False
+        pump.stop()
+        #等待运行线程结束
+        run_thread.join(timeout=5)
+        print("程序已停止")
+        sys.exit(0)#退出程序
+    except:
+        pass
+
+
+def main():#主代码
+    pump = BT100Pump('COM9')
+    if not pump.ser:#如果连接失败，直接退出
+        return
+
+    try:
+        print("=== 蠕动泵控制程序 ===\n")
+
+        #获取输入设置
+        total_time = int(input("总运行时间(分钟): "))
+        run_time = int(input("每次运行时间(分钟): "))
+        interval_time = int(input("间隔时间(分钟): "))
+        speed = int(input("转速(转/分钟): "))
+
+        #设置泵参数
+        pump.set_speed(speed)#设置转速
+        pump.set_timer_mode()#设置为定时模式
+        time.sleep(2)#发送设置后，给泵反应时间
+
+        #开始运行间隔循环
+        print("\n开始运行... (按回车键停止)")
+
+        #创建并启动运行线程
+        run_thread = threading.Thread(
+            target=pump.run_interval,
+            args=(run_time, interval_time, total_time)
+        )
+        run_thread.daemon = True#设置为守护线程
+        run_thread.start()
+
+        #创建并启动停止信号监听线程
+        stop_thread = threading.Thread(
+            target=wait_for_enter,
+            args=(pump, run_thread)
+        )
+        stop_thread.daemon = True#设置为守护线程
+        stop_thread.start()
+
+        #等待运行线程完成
+        run_thread.join()
+
+        #如果运行线程自然结束（不是被用户停止）
+        if pump.is_running == False:#注意：这里应该是检查运行线程是否自然结束
+            print("\n程序执行完毕!")
+
+        #给一点时间让停止线程处理
+        time.sleep(1)
+
+    except ValueError:
+        print("错误: 请输入数字")
+    except Exception as e:
+        print(f"错误: {e}")
+    finally:
+        pump.close()
+
+
+if __name__ == "__main__":
+    main()
