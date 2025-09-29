@@ -55,24 +55,24 @@ class BT100Pump:
 
     def set_speed(self, rpm):#设置转速
         speed_hex = format(rpm * 10, '04X')#转换为四字节十六进制
-        command = self.build_command(["01", "06", "00", "02", speed_hex[:2], speed_hex[2:]])
+        command = self.build_command(["02", "06", "00", "02", speed_hex[:2], speed_hex[2:]])
         return self.send_command(command)
 
     def set_timer_mode(self):#设置定时模式
-        command = self.build_command(["01", "06", "00", "07", "00", "01"])
+        command = self.build_command(["02", "06", "00", "07", "00", "01"])
         return self.send_command(command)
 
     def set_timer(self, minutes):#设置运行时间
         timer_hex = format(minutes * 600, '04X')#设置分钟转0.1秒单位并转换为四字节十六进制
-        command = self.build_command(["01", "06", "00", "08", timer_hex[:2], timer_hex[2:]])
+        command = self.build_command(["02", "06", "00", "08", timer_hex[:2], timer_hex[2:]])
         return self.send_command(command)
 
     def start(self):#发送指令启动泵
-        command = self.build_command(["01", "06", "00", "00", "00", "01"])
+        command = self.build_command(["02", "06", "00", "00", "00", "01"])
         return self.send_command(command)
 
     def stop(self):#发送指令停止泵
-        command = self.build_command(["01", "06", "00", "00", "00", "00"])
+        command = self.build_command(["02", "06", "00", "00", "00", "00"])
         return self.send_command(command)
 
     def run_interval(self, run_time, interval_time, total_duration):#设置运行时间、间隔时间和总运行时间
